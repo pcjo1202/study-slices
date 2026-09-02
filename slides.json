@@ -1,0 +1,9 @@
+[
+  {
+    "title": "CDN 최적화 감 잡기 — AWS S3 + CloudFront",
+    "description": "S3 정적 호스팅부터 CloudFront 캐싱·무효화까지, CDN 최적화의 큰 그림 잡기",
+    "date": "2026-09-02",
+    "tags": ["CDN", "AWS", "성능"],
+    "href": "frontend/cdn-cloudfront-slides.html"
+  }
+]

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>스터디 발표 자료 모음집</title>
+    <style>
+      :root {
+        --bg: #fbfbfa;
+        --card: #ffffff;
+        --line: #e6e6e3;
+        --ink: #1a1a19;
+        --muted: #737370;
+        --accent: #1a1a19;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo",
+          "Segoe UI", sans-serif;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+      header { padding: 96px 0 56px; border-bottom: 1px solid var(--line); }
+      h1 { margin: 0 0 12px; font-size: 34px; letter-spacing: -0.02em; font-weight: 700; }
+      header p { margin: 0; color: var(--muted); font-size: 15px; }
+      main { padding: 40px 0 96px; }
+      ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+      a.card {
+        display: block;
+        padding: 22px 24px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        text-decoration: none;
+        color: inherit;
+        transition: border-color 0.15s ease, transform 0.15s ease;
+      }
+      a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
+      .title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+      .desc { margin-top: 6px; color: var(--muted); font-size: 14px; }
+      .meta { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .date { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+      .tag {
+        font-size: 12px;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 2px 10px;
+      }
+      .empty { color: var(--muted); font-size: 14px; }
+      @media (max-width: 520px) {
+        header { padding: 64px 0 40px; }
+        h1 { font-size: 27px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="wrap">
+        <h1>스터디 발표 자료 모음집</h1>
+        <p>스터디에서 발표한 자료들을 한곳에 모아둡니다.</p>
+      </div>
+    </header>
+    <main>
+      <div class="wrap"><ul id="list"></ul></div>
+    </main>
+    <script>
+      fetch("slides.json")
+        .then((r) => r.json())
+        .then((slides) => {
+          const list = document.getElementById("list");
+          slides.sort((a, b) => b.date.localeCompare(a.date));
+          list.innerHTML = slides
+            .map(
+              (s) => `<li><a class="card" href="${s.href}">
+                <div class="title">${s.title}</div>
+                <div class="desc">${s.description}</div>
+                <div class="meta">
+                  <span class="date">${s.date}</span>
+                  ${(s.tags || []).map((t) => `<span class="tag">${t}</span>`).join("")}
+                </div>
+              </a></li>`
+            )
+            .join("");
+        })
+        .catch(() => {
+          document.getElementById("list").innerHTML =
+            '<li class="empty">발표 자료 목록을 불러오지 못했습니다.</li>';
+        });
+    </script>
+  </body>
+</html>
