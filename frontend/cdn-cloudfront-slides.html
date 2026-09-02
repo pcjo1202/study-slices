@@ -1,0 +1,2542 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CDN 최적화 감 잡기 — AWS S3 + CloudFront</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&family=Fredoka:wght@500;600;700&family=JetBrains+Mono:wght@500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* ===========================================
+   THEME TOKENS — 색상/폰트는 여기서 한 번에 변경
+   =========================================== */
+      :root {
+        --sky: #7cc4f5;
+        --sky-deep: #3f8fcf;
+        --sky-soft: #eaf6ff;
+        --cream: #fff8e7;
+        --sun: #ffd166;
+        --sun-deep: #e6b94f;
+        --mint: #8fe3c1;
+        --mint-deep: #2e8b6a;
+        --coral: #ff8a7a;
+        --coral-deep: #d9574a;
+        --lav: #c9b8f0;
+        --ink: #2b3a4a;
+        --muted: #6c7c8c;
+        --line: rgba(43, 58, 74, 0.08);
+        --card: #fff;
+        --puff: 0 10px 0 rgba(43, 58, 74, 0.06), 0 24px 48px rgba(124, 196, 245, 0.22);
+        --puff-sm: 0 8px 0 rgba(43, 58, 74, 0.06);
+        --font-display: 'Jua', 'Fredoka', sans-serif;
+        --font-latin: 'Fredoka', 'Jua', sans-serif;
+        --font-body: 'Gowun Dodum', sans-serif;
+        --font-mono: 'JetBrains Mono', monospace;
+        --ease: cubic-bezier(0.16, 1, 0.3, 1);
+        --bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+        --stage-bg: #eaf6ff;
+        --slide-bg: #eaf6ff;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      /* ===========================================
+   FIXED 16:9 STAGE: MANDATORY BASE STYLES
+   =========================================== */
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: var(--stage-bg, #000);
+      }
+      .deck-viewport {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        background: var(--stage-bg, #000);
+      }
+      .deck-stage {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        transform-origin: 0 0;
+        background: var(--slide-bg, #fff);
+      }
+      .slide {
+        position: absolute;
+        inset: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        display: block;
+        visibility: hidden;
+        opacity: 0;
+        pointer-events: none;
+        background: var(--slide-bg, #fff);
+      }
+      .slide.active,
+      .slide.visible {
+        visibility: visible;
+        opacity: 1;
+        pointer-events: auto;
+        z-index: 1;
+      }
+      img,
+      video,
+      canvas,
+      svg {
+        max-width: 100%;
+        max-height: 100%;
+      }
+      .deck-controls {
+        position: fixed;
+        left: 50%;
+        bottom: 22px;
+        transform: translateX(-50%);
+        z-index: 1000;
+      }
+      @media print {
+        html,
+        body {
+          width: 1920px;
+          height: auto;
+          overflow: visible;
+          background: #fff;
+        }
+        .deck-viewport {
+          position: static;
+          overflow: visible;
+          background: #fff;
+        }
+        .deck-stage {
+          position: static;
+          width: auto;
+          height: auto;
+          transform: none !important;
+          background: none;
+        }
+        .slide {
+          position: relative;
+          display: block !important;
+          visibility: visible !important;
+          opacity: 1 !important;
+          pointer-events: auto !important;
+          width: 1920px;
+          height: 1080px;
+          break-after: page;
+          page-break-after: always;
+        }
+        .slide:last-child {
+          break-after: auto;
+          page-break-after: auto;
+        }
+        .deck-controls {
+          display: none !important;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          transition-duration: 0.2s !important;
+        }
+      }
+
+      /* ===========================================
+   SLIDE BASE — 배경 그라데이션 + 공통 타이포
+   =========================================== */
+      .slide {
+        font-family: var(--font-body);
+        color: var(--ink);
+        background: linear-gradient(160deg, #eaf6ff 0%, #f4f9fd 55%, #fff8e7 100%);
+        padding: 120px 140px 140px;
+        transition: opacity 0.45s ease;
+      }
+      .slide.active {
+        transition: opacity 0.45s ease;
+      }
+      .lat {
+        font-family: var(--font-latin);
+        font-weight: 700;
+      }
+      .mono {
+        font-family: var(--font-mono);
+        font-size: 0.85em;
+      }
+      h1 {
+        font-family: var(--font-display);
+        font-weight: 400;
+        line-height: 1;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-family: var(--font-display);
+        font-weight: 400;
+        font-size: 88px;
+        line-height: 1.1;
+        letter-spacing: -0.01em;
+      }
+      h2 .lat {
+        color: var(--sky-deep);
+      }
+      h3 {
+        font-family: var(--font-display);
+        font-weight: 400;
+        font-size: 40px;
+        line-height: 1.2;
+      }
+      p {
+        font-size: 34px;
+        line-height: 1.55;
+      }
+      p.lead {
+        font-size: 40px;
+        line-height: 1.5;
+        max-width: 1300px;
+      }
+      b,
+      strong {
+        font-weight: 700;
+        color: var(--ink);
+      }
+      .accent {
+        color: var(--sky-deep);
+      }
+      .warm {
+        color: var(--coral-deep);
+      }
+      .good {
+        color: var(--mint-deep);
+      }
+      .hl {
+        position: relative;
+        display: inline-block;
+        z-index: 0;
+        white-space: nowrap;
+      }
+      .hl::after {
+        content: '';
+        position: absolute;
+        left: -6px;
+        right: -6px;
+        bottom: 2px;
+        height: 0.38em;
+        background: var(--sun);
+        border-radius: 9999px;
+        z-index: -1;
+        opacity: 0.85;
+      }
+
+      /* ===========================================
+   SLIDE CHROME — 좌상단 섹션 필, 우하단 페이지 번호
+   =========================================== */
+      .chrome {
+        position: absolute;
+        left: 140px;
+        top: 56px;
+        display: inline-flex;
+        align-items: center;
+        gap: 14px;
+        padding: 10px 26px;
+        border-radius: 9999px;
+        background: #fff;
+        box-shadow: var(--puff-sm);
+        font-size: 24px;
+        color: var(--muted);
+      }
+      .chrome i {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--coral);
+        display: inline-block;
+      }
+      .chrome b {
+        font-family: var(--font-latin);
+        color: var(--sky-deep);
+        font-weight: 700;
+      }
+      .pageno {
+        position: absolute;
+        right: 140px;
+        bottom: 56px;
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 24px;
+        color: var(--muted);
+        padding: 8px 22px;
+        border-radius: 9999px;
+        background: #fff;
+        box-shadow: var(--puff-sm);
+      }
+
+      /* 구름 장식 */
+      .cloud {
+        position: absolute;
+        background: #fff;
+        border-radius: 9999px;
+        box-shadow: 0 18px 40px rgba(124, 196, 245, 0.22);
+        opacity: 0.9;
+        pointer-events: none;
+      }
+      .cloud::before,
+      .cloud::after {
+        content: '';
+        position: absolute;
+        background: #fff;
+        border-radius: 50%;
+      }
+      .cloud.c1 {
+        width: 360px;
+        height: 120px;
+        left: 120px;
+        top: 110px;
+      }
+      .cloud.c1::before {
+        width: 150px;
+        height: 150px;
+        left: 60px;
+        top: -70px;
+      }
+      .cloud.c1::after {
+        width: 110px;
+        height: 110px;
+        left: 190px;
+        top: -40px;
+      }
+      .cloud.c2 {
+        width: 260px;
+        height: 90px;
+        right: 260px;
+        top: 80px;
+      }
+      .cloud.c2::before {
+        width: 110px;
+        height: 110px;
+        left: 40px;
+        top: -50px;
+      }
+      .cloud.c2::after {
+        width: 80px;
+        height: 80px;
+        left: 140px;
+        top: -30px;
+      }
+      .cloud.c3 {
+        width: 220px;
+        height: 76px;
+        right: 200px;
+        top: 60px;
+        opacity: 0.7;
+      }
+      .cloud.c3::before {
+        width: 90px;
+        height: 90px;
+        left: 34px;
+        top: -42px;
+      }
+      .cloud.c3::after {
+        width: 66px;
+        height: 66px;
+        left: 120px;
+        top: -24px;
+      }
+      .cloud {
+        animation: drift 9s ease-in-out infinite;
+      }
+      .cloud.c2 {
+        animation-delay: -3s;
+      }
+      .cloud.c3 {
+        animation-delay: -5s;
+      }
+      @keyframes drift {
+        0%,
+        100% {
+          translate: 0 0;
+        }
+        50% {
+          translate: 18px -10px;
+        }
+      }
+
+      /* ===========================================
+   COMPONENTS — 필, 카드, 노드
+   =========================================== */
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 14px;
+        padding: 14px 34px;
+        border-radius: 9999px;
+        background: #fff;
+        box-shadow: var(--puff-sm);
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 32px;
+        white-space: nowrap;
+      }
+      .pill.ko {
+        font-family: var(--font-display);
+        font-weight: 400;
+      }
+      .pill.sky {
+        background: var(--sky);
+        color: #fff;
+      }
+      .pill.mint {
+        background: var(--mint);
+        color: var(--ink);
+      }
+      .pill.sun {
+        background: var(--sun);
+        color: var(--ink);
+      }
+      .pill.coral {
+        background: var(--coral);
+        color: #fff;
+      }
+      .pill.lav {
+        background: var(--lav);
+        color: var(--ink);
+      }
+      .pill.outline {
+        background: transparent;
+        box-shadow: none;
+        border: 4px solid var(--sky);
+      }
+      .pill.sm {
+        font-size: 24px;
+        padding: 8px 22px;
+      }
+      .card {
+        background: var(--card);
+        border-radius: 44px;
+        box-shadow: var(--puff);
+        padding: 48px 52px;
+      }
+      .card.tint-sky {
+        background: #f3f9ff;
+      }
+      .card.tint-sun {
+        background: #fff7df;
+      }
+      .card.tint-mint {
+        background: #eefbf5;
+      }
+      .card.tint-coral {
+        background: #fff0ed;
+      }
+      .card h3 {
+        margin-bottom: 18px;
+      }
+      .card p {
+        font-size: 30px;
+        line-height: 1.5;
+        color: var(--ink);
+      }
+      .node {
+        position: absolute;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        text-align: center;
+        font-family: var(--font-latin);
+        font-weight: 700;
+        color: var(--ink);
+        background: #fff;
+        box-shadow:
+          var(--puff),
+          inset 0 -8px 0 rgba(0, 0, 0, 0.05);
+      }
+      .node small {
+        display: block;
+        font-family: var(--font-body);
+        font-weight: 400;
+        font-size: 0.55em;
+        line-height: 1.2;
+        margin-top: 2px;
+      }
+      .node.sun {
+        background: var(--sun);
+        box-shadow:
+          0 14px 0 var(--sun-deep),
+          0 28px 50px rgba(255, 209, 102, 0.4);
+      }
+      .node.mint {
+        background: var(--mint);
+      }
+      .node.sky {
+        background: var(--sky);
+        color: #fff;
+      }
+      .node.coral {
+        background: var(--coral);
+        color: #fff;
+      }
+      .dots {
+        fill: none;
+        stroke: var(--sky);
+        stroke-width: 6;
+        stroke-linecap: round;
+        stroke-dasharray: 2 18;
+        animation: dash 2.4s linear infinite;
+      }
+      .dots.coral {
+        stroke: var(--coral);
+      }
+      .dots.mint {
+        stroke: var(--mint-deep);
+      }
+      .dots.faint {
+        opacity: 0.35;
+      }
+      @keyframes dash {
+        to {
+          stroke-dashoffset: -40;
+        }
+      }
+      .num {
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 120px;
+        line-height: 1;
+        color: var(--sky-deep);
+      }
+      .step {
+        display: flex;
+        align-items: center;
+        gap: 28px;
+      }
+      .step .n {
+        flex: none;
+        width: 76px;
+        height: 76px;
+        border-radius: 50%;
+        background: var(--sun);
+        display: grid;
+        place-items: center;
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 34px;
+        box-shadow: 0 6px 0 var(--sun-deep);
+      }
+      .code {
+        font-family: var(--font-mono);
+        font-size: 26px;
+        line-height: 1.6;
+        background: #f3f7fb;
+        border-radius: 28px;
+        padding: 32px 40px;
+        color: var(--ink);
+        white-space: pre;
+      }
+      .code .k {
+        color: var(--sky-deep);
+      }
+      .code .s {
+        color: var(--mint-deep);
+      }
+      .code .c {
+        color: var(--muted);
+      }
+      .callout {
+        display: flex;
+        gap: 22px;
+        align-items: flex-start;
+        background: #fff;
+        border-radius: 32px;
+        padding: 26px 34px;
+        box-shadow: var(--puff-sm);
+        font-size: 28px;
+        line-height: 1.5;
+      }
+      .callout .ic {
+        flex: none;
+        width: 54px;
+        height: 54px;
+        border-radius: 50%;
+        background: var(--sun);
+        display: grid;
+        place-items: center;
+        font-size: 28px;
+      }
+
+      /* ===========================================
+   REVEAL ANIMATIONS — .visible 붙으면 순차 등장
+   =========================================== */
+      .reveal {
+        opacity: 0;
+        transform: translateY(34px);
+        transition:
+          opacity 0.7s var(--ease),
+          transform 0.7s var(--ease);
+      }
+      .slide.visible .reveal {
+        opacity: 1;
+        transform: none;
+      }
+      .pop {
+        opacity: 0;
+        scale: 0.4;
+        transition:
+          opacity 0.7s var(--bounce),
+          scale 0.7s var(--bounce);
+      }
+      .slide.visible .pop {
+        opacity: 1;
+        scale: 1;
+      }
+      .d1 {
+        transition-delay: 0.1s;
+      }
+      .d2 {
+        transition-delay: 0.22s;
+      }
+      .d3 {
+        transition-delay: 0.34s;
+      }
+      .d4 {
+        transition-delay: 0.46s;
+      }
+      .d5 {
+        transition-delay: 0.58s;
+      }
+      .d6 {
+        transition-delay: 0.7s;
+      }
+      .d7 {
+        transition-delay: 0.82s;
+      }
+      .d8 {
+        transition-delay: 0.94s;
+      }
+      .grow {
+        transform-origin: left center;
+        scale: 0 1;
+        transition: scale 1.1s var(--ease);
+      }
+      .slide.visible .grow {
+        scale: 1 1;
+      }
+
+      /* ===========================================
+   SLIDE-SPECIFIC LAYOUTS
+   =========================================== */
+      /* 01 Title */
+      .s-title .text {
+        position: absolute;
+        left: 140px;
+        top: 300px;
+        width: 920px;
+      }
+      .s-title h1 {
+        font-size: 176px;
+        margin-top: 40px;
+      }
+      .s-title h1 .lat {
+        color: var(--sky-deep);
+      }
+      .s-title .sub {
+        margin-top: 40px;
+        display: flex;
+        gap: 16px;
+        align-items: center;
+        font-size: 38px;
+      }
+      .s-title .sub b {
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .s-title .meta {
+        position: absolute;
+        left: 140px;
+        bottom: 96px;
+        display: flex;
+        gap: 36px;
+        align-items: center;
+        font-size: 28px;
+        color: var(--muted);
+      }
+      .who {
+        display: inline-flex;
+        align-items: center;
+        gap: 16px;
+        padding: 10px 26px 10px 10px;
+        border-radius: 9999px;
+        background: #fff;
+        color: var(--ink);
+        box-shadow: var(--puff-sm);
+      }
+      .who i {
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        background: var(--mint);
+        display: grid;
+        place-items: center;
+        font-family: var(--font-display);
+        font-size: 26px;
+        font-style: normal;
+      }
+      .net {
+        position: absolute;
+        right: 120px;
+        top: 180px;
+        width: 760px;
+        height: 720px;
+      }
+      .net svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+      .net .origin {
+        width: 230px;
+        height: 230px;
+        left: 250px;
+        top: 250px;
+        font-size: 40px;
+      }
+      .net .e {
+        width: 120px;
+        height: 120px;
+        font-size: 22px;
+      }
+      .net .e1 {
+        left: 0;
+        top: 40px;
+      }
+      .net .e2 {
+        right: 0;
+        top: 0;
+      }
+      .net .e3 {
+        left: 40px;
+        bottom: 60px;
+      }
+      .net .e4 {
+        right: 20px;
+        bottom: 100px;
+      }
+      .net .e5 {
+        left: 340px;
+        bottom: 0;
+      }
+      .net .user {
+        left: 330px;
+        top: -30px;
+        width: 88px;
+        height: 88px;
+        font-size: 44px;
+      }
+
+      /* 02 Agenda */
+      .s-agenda .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 48px;
+        margin-top: 64px;
+      }
+      .s-agenda .card {
+        min-height: 420px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 26px;
+      }
+      .s-agenda .card .tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+      }
+      .s-agenda .foot {
+        margin-top: 56px;
+        font-size: 32px;
+        color: var(--muted);
+      }
+
+      /* 03 CDN definition */
+      .s-def .cols {
+        display: grid;
+        grid-template-columns: 900px 1fr;
+        gap: 60px;
+        margin-top: 40px;
+        align-items: center;
+      }
+      .s-def .diagram {
+        position: relative;
+        height: 640px;
+      }
+      .s-def svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+      .s-def .lbl {
+        position: absolute;
+        padding: 8px 20px;
+        border-radius: 9999px;
+        background: #fff;
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 24px;
+        box-shadow: var(--puff-sm);
+      }
+
+      /* 04 Distance */
+      .s-dist .route {
+        position: relative;
+        height: 360px;
+        margin-top: 30px;
+      }
+      .s-dist .route svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+      .s-dist .sea {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 120px;
+        border-radius: 9999px;
+        background: linear-gradient(180deg, #d8eeff, #bfe1fa);
+        opacity: 0.9;
+      }
+      .s-dist .rtt {
+        position: absolute;
+        left: 50%;
+        top: 40px;
+        translate: -50% 0;
+      }
+      .s-dist .steps {
+        display: flex;
+        gap: 28px;
+        align-items: center;
+        margin-top: 60px;
+      }
+      .s-dist .steps .pill {
+        font-size: 30px;
+      }
+      .s-dist .steps .arrow {
+        font-family: var(--font-latin);
+        font-size: 40px;
+        color: var(--muted);
+      }
+
+      /* 05 Compare bars */
+      .s-cmp .rows {
+        display: flex;
+        flex-direction: column;
+        gap: 56px;
+        margin-top: 70px;
+      }
+      .s-cmp .row {
+        display: grid;
+        grid-template-columns: 420px 1fr;
+        align-items: center;
+        gap: 40px;
+      }
+      .s-cmp .bar {
+        height: 96px;
+        border-radius: 9999px;
+        display: flex;
+        align-items: center;
+        padding: 0 40px;
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 36px;
+        color: #fff;
+        box-shadow: var(--puff-sm);
+      }
+      .s-cmp .bar.far {
+        width: 100%;
+        background: var(--coral);
+      }
+      .s-cmp .bar.near {
+        width: 14%;
+        background: var(--mint);
+        color: var(--ink);
+        justify-content: center;
+        padding: 0;
+      }
+      .s-cmp .side {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .s-cmp .side b {
+        font-family: var(--font-display);
+        font-weight: 400;
+        font-size: 40px;
+      }
+      .s-cmp .side span {
+        font-size: 28px;
+        color: var(--muted);
+      }
+      .s-cmp .note {
+        margin-top: 64px;
+      }
+
+      /* 06 Benefits */
+      .s-ben .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 40px;
+        margin-top: 56px;
+      }
+      .s-ben .card {
+        min-height: 560px;
+      }
+      .s-ben .ic {
+        width: 96px;
+        height: 96px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-size: 48px;
+        margin-bottom: 28px;
+        box-shadow: var(--puff-sm);
+      }
+      .s-ben ul {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        margin-top: 10px;
+      }
+      .s-ben li {
+        font-size: 29px;
+        line-height: 1.45;
+        padding-left: 34px;
+        position: relative;
+      }
+      .s-ben li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0.55em;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--sky);
+      }
+
+      /* 07 When */
+      .s-when .list {
+        display: flex;
+        flex-direction: column;
+        gap: 30px;
+        margin-top: 56px;
+      }
+      .s-when .row {
+        display: grid;
+        grid-template-columns: 420px 560px 1fr;
+        align-items: center;
+        gap: 36px;
+        background: #fff;
+        border-radius: 9999px;
+        padding: 22px 40px 22px 24px;
+        box-shadow: var(--puff-sm);
+      }
+      .s-when .row .pill {
+        font-size: 30px;
+      }
+      .s-when .row .mono {
+        font-size: 26px;
+        color: var(--sky-deep);
+      }
+      .s-when .row .why {
+        font-size: 29px;
+        color: var(--muted);
+      }
+
+      /* 08 Cache trap */
+      .s-trap .cols {
+        display: grid;
+        grid-template-columns: 760px 1fr;
+        gap: 56px;
+        margin-top: 48px;
+        align-items: start;
+      }
+      .s-trap .rules {
+        display: flex;
+        flex-direction: column;
+        gap: 26px;
+      }
+      .s-trap .rule {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 24px;
+        align-items: center;
+        background: #fff;
+        border-radius: 32px;
+        padding: 26px 34px;
+        box-shadow: var(--puff-sm);
+      }
+      .s-trap .rule .f {
+        font-size: 30px;
+      }
+      .s-trap .rule .f small {
+        display: block;
+        font-size: 24px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+      .s-trap .foot {
+        margin-top: 40px;
+      }
+
+      /* 09 Section */
+      .s-sec {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: flex-start;
+      }
+      .s-sec h2 {
+        font-size: 120px;
+      }
+      .s-sec .bigpills {
+        display: flex;
+        gap: 24px;
+        align-items: center;
+        margin-top: 48px;
+      }
+      .s-sec .bigpills .pill {
+        font-size: 52px;
+        padding: 24px 56px;
+      }
+      .s-sec .bigpills .plus {
+        font-family: var(--font-latin);
+        font-size: 64px;
+        color: var(--muted);
+      }
+
+      /* 10 Concepts */
+      .s-con .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 40px;
+        margin-top: 56px;
+      }
+      .s-con .card {
+        min-height: 580px;
+      }
+      .s-con .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 24px;
+        border-radius: 9999px;
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 30px;
+        margin-bottom: 26px;
+      }
+      .s-con ul {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .s-con li {
+        font-size: 28px;
+        line-height: 1.45;
+        padding-left: 34px;
+        position: relative;
+      }
+      .s-con li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0.5em;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--sun);
+      }
+
+      /* 11 Architecture */
+      .s-arch .stage2 {
+        position: relative;
+        height: 640px;
+        margin-top: 30px;
+      }
+      .s-arch .stage2 svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+      .s-arch .node {
+        translate: 0 0;
+      }
+      .s-arch .tag {
+        position: absolute;
+        padding: 8px 20px;
+        border-radius: 9999px;
+        background: #fff;
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 24px;
+        box-shadow: var(--puff-sm);
+      }
+      .s-arch .lock {
+        position: absolute;
+        width: 74px;
+        height: 74px;
+        border-radius: 50%;
+        background: var(--sun);
+        display: grid;
+        place-items: center;
+        font-size: 36px;
+        box-shadow: 0 6px 0 var(--sun-deep);
+      }
+
+      /* 12 S3 steps */
+      .s-s3 .cols {
+        display: grid;
+        grid-template-columns: 1fr 720px;
+        gap: 56px;
+        margin-top: 48px;
+        align-items: start;
+      }
+      .s-s3 .steps {
+        display: flex;
+        flex-direction: column;
+        gap: 30px;
+      }
+      .s-s3 .step .body {
+        font-size: 32px;
+        line-height: 1.45;
+      }
+      .s-s3 .step .body small {
+        display: block;
+        font-size: 26px;
+        color: var(--muted);
+      }
+
+      /* 13 CF timeline */
+      .s-cf .tl {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 36px 40px;
+        margin-top: 56px;
+      }
+      .s-cf .item {
+        background: #fff;
+        border-radius: 36px;
+        padding: 32px 36px;
+        box-shadow: var(--puff-sm);
+        display: flex;
+        gap: 24px;
+        align-items: flex-start;
+        min-height: 300px;
+      }
+      .s-cf .item .n {
+        flex: none;
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        background: var(--sky);
+        color: #fff;
+        display: grid;
+        place-items: center;
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 30px;
+        box-shadow: 0 6px 0 var(--sky-deep);
+      }
+      .s-cf .item.hot .n {
+        background: var(--sun);
+        color: var(--ink);
+        box-shadow: 0 6px 0 var(--sun-deep);
+      }
+      .s-cf .item h3 {
+        font-size: 34px;
+        margin-bottom: 8px;
+      }
+      .s-cf .item p {
+        font-size: 26px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+
+      /* 14 Free plan */
+      .s-free .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 36px;
+        margin-top: 64px;
+      }
+      .s-free .stat {
+        background: #fff;
+        border-radius: 44px;
+        padding: 48px 36px;
+        box-shadow: var(--puff);
+        text-align: center;
+        min-height: 360px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 12px;
+      }
+      .s-free .stat .v {
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 96px;
+        line-height: 1;
+        color: var(--sky-deep);
+      }
+      .s-free .stat .v small {
+        font-size: 44px;
+      }
+      .s-free .stat .l {
+        font-size: 30px;
+        color: var(--muted);
+      }
+      .s-free .foot {
+        margin-top: 56px;
+      }
+
+      /* 15 OAC + policy */
+      .s-oac .cols {
+        display: grid;
+        grid-template-columns: 900px 1fr;
+        gap: 56px;
+        margin-top: 40px;
+        align-items: center;
+      }
+      .s-oac .code {
+        font-size: 23px;
+        line-height: 1.5;
+        padding: 28px 36px;
+      }
+      .s-oac .vs {
+        display: flex;
+        flex-direction: column;
+        gap: 28px;
+      }
+      .s-oac .try {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 20px;
+        background: #fff;
+        border-radius: 9999px;
+        padding: 22px 30px 22px 36px;
+        box-shadow: var(--puff-sm);
+        font-size: 28px;
+      }
+      .s-oac .try .mono {
+        font-size: 24px;
+        color: var(--muted);
+      }
+      .s-oac .res {
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 34px;
+        padding: 10px 28px;
+        border-radius: 9999px;
+      }
+      .s-oac .res.no {
+        background: var(--coral);
+        color: #fff;
+      }
+      .s-oac .res.ok {
+        background: var(--mint);
+      }
+
+      /* 16 ACM */
+      .s-acm .cols {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 56px;
+        margin-top: 48px;
+        align-items: start;
+      }
+      .s-acm .warn {
+        background: #fff;
+        border-radius: 44px;
+        padding: 44px 48px;
+        box-shadow: var(--puff);
+        border: 6px solid var(--coral);
+      }
+      .s-acm .warn h3 {
+        font-size: 44px;
+        color: var(--coral-deep);
+        margin-bottom: 14px;
+      }
+      .s-acm ul {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        margin-top: 22px;
+      }
+      .s-acm li {
+        font-size: 29px;
+        line-height: 1.45;
+        padding-left: 34px;
+        position: relative;
+      }
+      .s-acm li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0.5em;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--sky);
+      }
+
+      /* 17 DNS cases */
+      .s-dns .cols {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 48px;
+        margin-top: 48px;
+        align-items: stretch;
+      }
+      .s-dns .card {
+        min-height: 540px;
+      }
+      .s-dns ul {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        margin-top: 8px;
+      }
+      .s-dns li {
+        font-size: 28px;
+        line-height: 1.45;
+        padding-left: 34px;
+        position: relative;
+      }
+      .s-dns li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0.5em;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--mint-deep);
+      }
+      .s-dns .code {
+        font-size: 24px;
+        padding: 18px 28px;
+        margin-top: 16px;
+        border-radius: 22px;
+      }
+
+      /* 18 Flow chain */
+      .s-flow .chain {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 28px;
+        margin-top: 80px;
+        align-items: stretch;
+      }
+      .s-flow .box {
+        background: #fff;
+        border-radius: 40px;
+        padding: 40px 30px;
+        box-shadow: var(--puff);
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 18px;
+        position: relative;
+        min-height: 380px;
+        justify-content: center;
+      }
+      .s-flow .box .n {
+        width: 70px;
+        height: 70px;
+        border-radius: 50%;
+        background: var(--sun);
+        display: grid;
+        place-items: center;
+        font-family: var(--font-latin);
+        font-weight: 700;
+        font-size: 32px;
+        box-shadow: 0 6px 0 var(--sun-deep);
+      }
+      .s-flow .box h3 {
+        font-size: 34px;
+      }
+      .s-flow .box p {
+        font-size: 25px;
+        color: var(--muted);
+        line-height: 1.4;
+      }
+      .s-flow .box::after {
+        content: '›';
+        position: absolute;
+        right: -30px;
+        top: 50%;
+        translate: 0 -50%;
+        font-family: var(--font-latin);
+        font-size: 60px;
+        color: var(--sky);
+        line-height: 1;
+      }
+      .s-flow .box:last-child::after {
+        content: none;
+      }
+      .s-flow .foot {
+        margin-top: 64px;
+        text-align: center;
+      }
+
+      /* 19 Wrap */
+      .s-wrap .chain {
+        display: flex;
+        gap: 22px;
+        align-items: center;
+        margin-top: 64px;
+        flex-wrap: wrap;
+      }
+      .s-wrap .chain .pill {
+        font-size: 30px;
+        padding: 16px 32px;
+      }
+      .s-wrap .chain .arrow {
+        font-family: var(--font-latin);
+        font-size: 44px;
+        color: var(--muted);
+      }
+      .s-wrap .quote {
+        margin-top: 80px;
+        background: #fff;
+        border-radius: 44px;
+        padding: 48px 56px;
+        box-shadow: var(--puff);
+        font-family: var(--font-display);
+        font-size: 48px;
+        line-height: 1.4;
+        max-width: 1500px;
+      }
+      .s-wrap .quote span {
+        color: var(--sky-deep);
+      }
+
+      /* 20 Next */
+      .s-next .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 40px;
+        margin-top: 64px;
+      }
+      .s-next .card {
+        min-height: 440px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 20px;
+      }
+      .s-next .card .ic {
+        width: 96px;
+        height: 96px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-size: 48px;
+        box-shadow: var(--puff-sm);
+      }
+
+      /* 21 Thanks */
+      .s-end {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+      }
+      .s-end h1 {
+        font-size: 200px;
+      }
+      .s-end h1 .lat {
+        color: var(--sky-deep);
+      }
+      .s-end p {
+        font-size: 40px;
+        margin-top: 40px;
+        color: var(--muted);
+      }
+      .s-end .who {
+        margin-top: 48px;
+        font-size: 30px;
+      }
+
+      /* ===========================================
+   DECK CHROME (스테이지 밖) — 진행 바, 편집 토글
+   =========================================== */
+      .progress {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        height: 6px;
+        width: 0;
+        background: var(--sky-deep);
+        z-index: 1000;
+        transition: width 0.4s var(--ease);
+      }
+      .edit-hotzone {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 80px;
+        height: 80px;
+        z-index: 10000;
+        cursor: pointer;
+      }
+      .edit-toggle {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: none;
+        background: #fff;
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+        font-size: 22px;
+        cursor: pointer;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s ease;
+        z-index: 10001;
+      }
+      .edit-toggle.show,
+      .edit-toggle.active {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .edit-toggle.active {
+        background: var(--sun);
+      }
+      body.editing [contenteditable='true'] {
+        outline: 3px dashed var(--sky);
+        outline-offset: 6px;
+        border-radius: 12px;
+        cursor: text;
+      }
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 28px;
+        translate: -50% 0;
+        padding: 12px 24px;
+        border-radius: 9999px;
+        background: var(--ink);
+        color: #fff;
+        font-family: var(--font-body);
+        font-size: 15px;
+        opacity: 0;
+        transition: opacity 0.3s;
+        z-index: 10002;
+        pointer-events: none;
+      }
+      .toast.show {
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="deck-viewport">
+      <main class="deck-stage" id="deckStage">
+        <!-- ====================== 01 TITLE ====================== -->
+        <section class="slide s-title">
+          <div class="cloud c1"></div>
+          <div class="cloud c2"></div>
+          <div class="text">
+            <div
+              class="pill sm reveal"
+              style="
+                font-family: var(--font-body);
+                color: var(--muted);
+                font-weight: 400;
+                font-size: 28px;
+                padding: 14px 32px;
+              "
+            >
+              <i
+                style="
+                  width: 18px;
+                  height: 18px;
+                  border-radius: 50%;
+                  background: var(--coral);
+                  display: inline-block;
+                "
+              ></i
+              >감도 안오네 시리즈 · 프론트엔드 스터디
+            </div>
+            <h1 class="reveal d1">
+              <span class="lat">CDN</span> 최적화<br /><span class="hl">감 잡기</span>
+            </h1>
+            <div class="sub reveal d2">
+              <span class="pill" style="color: var(--mint-deep)">AWS S3</span><b>+</b
+              ><span class="pill" style="color: var(--sky-deep)">CloudFront</span>
+            </div>
+          </div>
+          <div class="meta reveal d3">
+            <span class="who"><i>조</i>박창조</span><span>2026. 09</span>
+          </div>
+          <div class="net">
+            <svg viewBox="0 0 760 720">
+              <path class="dots" d="M365 365 C 250 300, 150 200, 60 100" />
+              <path class="dots" d="M365 365 C 500 300, 620 180, 700 60" />
+              <path class="dots" d="M365 365 C 260 450, 180 520, 100 600" />
+              <path class="dots" d="M365 365 C 500 460, 600 520, 680 560" />
+              <path class="dots" d="M365 365 C 380 480, 400 560, 400 660" />
+              <path class="dots" d="M365 365 C 370 250, 374 130, 374 20" />
+            </svg>
+            <div class="node sun origin pop d2">
+              <div>Origin<small>S3</small></div>
+            </div>
+            <div class="node mint e e1 pop d3">Edge</div>
+            <div class="node coral e e2 pop d4">Edge</div>
+            <div class="node sky e e3 pop d5">Edge</div>
+            <div class="node mint e e4 pop d6">Edge</div>
+            <div class="node coral e e5 pop d7">Edge</div>
+            <div class="node user pop d8">🙋</div>
+          </div>
+        </section>
+
+        <!-- ====================== 02 AGENDA ====================== -->
+        <section class="slide s-agenda">
+          <div class="chrome"><i></i>오늘 다룰 것</div>
+          <h2 class="reveal">
+            최적화의 꽃, <span class="lat">CDN</span>을<br />개념부터 무료 구축까지
+          </h2>
+          <div class="grid">
+            <div class="card tint-sky reveal d1">
+              <div class="pill sky" style="align-self: flex-start">Part 1</div>
+              <h3>캐싱과 CDN 기본 개념</h3>
+              <div class="tags">
+                <span class="pill sm ko">왜 필요한가</span
+                ><span class="pill sm ko">뭐가 좋아지나</span
+                ><span class="pill sm ko">뭘 올리나</span><span class="pill sm ko">캐시 지뢰</span>
+              </div>
+            </div>
+            <div class="card tint-sun reveal d2">
+              <div class="pill sun" style="align-self: flex-start">Part 2</div>
+              <h3>AWS로 직접 만들기</h3>
+              <div class="tags">
+                <span class="pill sm">S3</span><span class="pill sm">CloudFront</span
+                ><span class="pill sm">OAC</span><span class="pill sm">ACM</span
+                ><span class="pill sm ko">커스텀 도메인</span>
+              </div>
+            </div>
+          </div>
+          <p class="foot reveal d3">
+            콘솔 화면만 따라가면 되는 작업입니다. 앉아서 해보면 오래 걸리지 않아요.
+          </p>
+          <div class="pageno">02</div>
+        </section>
+
+        <!-- ====================== 03 CDN DEFINITION ====================== -->
+        <section class="slide s-def">
+          <div class="chrome"><i></i><b>01</b> CDN 너 누구냐</div>
+          <h2 class="reveal">
+            <span class="lat">CDN</span>, 가까운 곳에서<br />대신 대답해 주는 네트워크
+          </h2>
+          <div class="cols">
+            <div>
+              <p class="lead reveal d1">
+                원본 서버의 <b>정적 콘텐츠</b>를 전 세계 <b>엣지 로케이션</b>에 미리 복사해 두고,
+                사용자와 <b>가장 가까운 엣지</b>가 대신 응답합니다.
+              </p>
+              <div class="callout reveal d2" style="margin-top: 36px">
+                <div class="ic">✨</div>
+                <div>
+                  엣지에 파일이 이미 있으면 <b>Origin 서버까지 아예 가지 않습니다.</b> 이게 제일 큰
+                  특징이에요.
+                </div>
+              </div>
+            </div>
+            <div class="diagram">
+              <svg viewBox="0 0 760 640">
+                <path class="dots mint" d="M120 320 C 220 320, 260 320, 340 320" />
+                <path class="dots faint" d="M470 300 C 560 220, 620 160, 660 110" />
+              </svg>
+              <div
+                class="node pop d2"
+                style="width: 130px; height: 130px; left: 0; top: 255px; font-size: 56px"
+              >
+                🙋
+              </div>
+              <div
+                class="node mint pop d3"
+                style="width: 170px; height: 170px; left: 340px; top: 235px; font-size: 32px"
+              >
+                <div>Edge<small>캐시 있음</small></div>
+              </div>
+              <div
+                class="node sun pop d4"
+                style="width: 150px; height: 150px; left: 610px; top: 20px; font-size: 28px"
+              >
+                <div>Origin<small>S3</small></div>
+              </div>
+              <div class="lbl reveal d5" style="left: 170px; top: 230px; color: var(--mint-deep)">
+                HIT · 바로 응답
+              </div>
+              <div class="lbl reveal d6" style="left: 520px; top: 200px; color: var(--muted)">
+                MISS일 때만
+              </div>
+            </div>
+          </div>
+          <div class="pageno">03</div>
+        </section>
+
+        <!-- ====================== 04 DISTANCE ====================== -->
+        <section class="slide s-dist">
+          <div class="chrome"><i></i><b>01</b> 그래서 왜 필요한데요</div>
+          <h2 class="reveal">
+            아무리 줄여도 안 줄어드는 비용,<br /><span class="hl">물리적인 거리</span>
+          </h2>
+          <div class="route">
+            <div class="sea"></div>
+            <svg viewBox="0 0 1640 360">
+              <path class="dots coral" d="M120 180 C 500 40, 1140 40, 1520 180" />
+            </svg>
+            <div
+              class="node sky pop d1"
+              style="width: 150px; height: 150px; left: 40px; top: 110px; font-size: 30px"
+            >
+              <div>서울<small>사용자</small></div>
+            </div>
+            <div
+              class="node coral pop d2"
+              style="width: 150px; height: 150px; right: 40px; top: 110px; font-size: 30px"
+            >
+              <div>뉴욕<small>서버</small></div>
+            </div>
+            <div class="pill coral rtt reveal d3">왕복(RTT) 약 170 ~ 200ms</div>
+            <div
+              class="pill sm ko reveal d4"
+              style="
+                position: absolute;
+                left: 50%;
+                bottom: 34px;
+                translate: -50% 0;
+                color: var(--muted);
+              "
+            >
+              데이터는 바다 밑 광케이블을 타고 물리적으로 이동합니다
+            </div>
+          </div>
+          <div class="steps">
+            <span class="pill ko reveal d3">TCP 연결 <b class="lat">1 RTT</b></span
+            ><span class="arrow reveal d4">→</span>
+            <span class="pill ko reveal d4">TLS 핸드셰이크 <b class="lat">1 RTT</b></span
+            ><span class="arrow reveal d5">→</span>
+            <span class="pill ko reveal d5">HTTP 요청·응답 <b class="lat">1 RTT</b></span
+            ><span class="arrow reveal d6">=</span>
+            <span class="pill sun reveal d6">첫 바이트 전에 이미 500ms+</span>
+          </div>
+          <div class="pageno">04</div>
+        </section>
+
+        <!-- ====================== 05 COMPARE ====================== -->
+        <section class="slide s-cmp">
+          <div class="chrome"><i></i><b>01</b> 그래서 왜 필요한데요</div>
+          <h2 class="reveal"><span class="lat">CDN</span>은 이 거리를 줄여 줍니다</h2>
+          <div class="rows">
+            <div class="row">
+              <div class="side reveal d1"><b>뉴욕 Origin에서</b><span>180ms × 3번 왕복</span></div>
+              <div class="bar far d2 grow">약 540ms</div>
+            </div>
+            <div class="row">
+              <div class="side reveal d3">
+                <b>가까운 엣지에서</b><span>10 ~ 30ms × 3번 왕복</span>
+              </div>
+              <div class="bar near d4 grow">~60ms</div>
+            </div>
+          </div>
+          <div class="callout note reveal d5">
+            <div class="ic">🎮</div>
+            <div>
+              100KB JS를 50KB로 줄여도 이 500ms는 그대로 남습니다. 한국에서 미국 서버로 롤을 하면
+              핑이 높은 것과 같은 이유예요.
+            </div>
+          </div>
+          <div class="pageno">05</div>
+        </section>
+
+        <!-- ====================== 06 BENEFITS ====================== -->
+        <section class="slide s-ben">
+          <div class="chrome"><i></i><b>01</b> CDN을 쓰면</div>
+          <h2 class="reveal">이런 것들이 좋아집니다</h2>
+          <div class="grid">
+            <div class="card tint-sun reveal d1">
+              <div class="ic" style="background: var(--sun)">🖥️</div>
+              <h3>서버 입장에서</h3>
+              <ul>
+                <li>Origin 요청량 감소</li>
+                <li>서버 부하 · 비용 감소</li>
+                <li>운영 안정성 향상</li>
+              </ul>
+            </div>
+            <div class="card tint-mint reveal d2">
+              <div class="ic" style="background: var(--mint)">🙋</div>
+              <h3>사용자 입장에서</h3>
+              <ul>
+                <li>더 빠른 응답</li>
+                <li>사이트를 빠르게 경험</li>
+              </ul>
+            </div>
+            <div class="card tint-sky reveal d3">
+              <div class="ic" style="background: var(--sky)">⚡</div>
+              <h3>최적화 관점에서</h3>
+              <ul>
+                <li><b>FCP · LCP 개선</b></li>
+                <li>gzip · Brotli 압축</li>
+                <li>TLS 인증 처리</li>
+                <li>HTTP/2 · HTTP/3 적용</li>
+              </ul>
+            </div>
+          </div>
+          <div class="pageno">06</div>
+        </section>
+
+        <!-- ====================== 07 WHEN ====================== -->
+        <section class="slide s-when">
+          <div class="chrome"><i></i><b>01</b> 언제 써먹나</div>
+          <h2 class="reveal">
+            CDN에 올리기 좋은 건<br /><span class="hl">"빌드하면 나오는 것들"</span>
+          </h2>
+          <div class="list">
+            <div class="row reveal d1">
+              <span class="pill sky">빌드 산출물</span
+              ><span class="mono">_next/static/ · dist/assets/</span
+              ><span class="why">파일명에 해시가 붙어 다음 빌드 전까지 안 바뀜</span>
+            </div>
+            <div class="row reveal d2">
+              <span class="pill mint">이미지 · 폰트 · 아이콘</span
+              ><span class="mono">logo.png · hero.webp · .woff2</span
+              ><span class="why">한 번 올리면 거의 바뀌지 않음</span>
+            </div>
+            <div class="row reveal d3">
+              <span class="pill sun">정적 사이트 통째로</span
+              ><span class="mono">Astro · React SPA</span
+              ><span class="why">띄워둘 서버가 아예 필요 없음</span>
+            </div>
+          </div>
+          <p class="reveal d4" style="margin-top: 56px; color: var(--muted)">
+            한 번 만들어지면 변하지 않는 <b>정적인 요소</b>가 CDN의 주인공입니다.
+          </p>
+          <div class="pageno">07</div>
+        </section>
+
+        <!-- ====================== 08 CACHE TRAP ====================== -->
+        <section class="slide s-trap">
+          <div class="chrome"><i></i><b>01</b> 아무거나 캐싱하면 되나요</div>
+          <h2 class="reveal">
+            배포했는데 <span class="warm">옛날 화면</span>이<br />계속 나오는 지뢰
+          </h2>
+          <div class="cols">
+            <pre class="code reveal d1">dist/
+  index.html              <span class="c">← 이름이 안 바뀜</span>
+  assets/index-<span class="k">a3f9c2</span>.js   <span class="c">← 내용 바뀌면 해시도 바뀜</span>
+  assets/index-<span class="k">7b1e04</span>.css</pre>
+            <div class="rules">
+              <div class="rule reveal d2">
+                <div class="f">
+                  해시 붙은 JS · CSS · 이미지<small class="mono">max-age=31536000, immutable</small>
+                </div>
+                <span class="pill mint sm">1년 캐싱 OK</span>
+              </div>
+              <div class="rule reveal d3">
+                <div class="f">
+                  <span class="mono">index.html</span><small>짧게, 또는 no-cache</small>
+                </div>
+                <span class="pill coral sm">길게 걸면 사고</span>
+              </div>
+            </div>
+          </div>
+          <div class="callout foot reveal d4">
+            <div class="ic">💣</div>
+            <div>
+              엣지가 <b>옛 HTML</b>을 들고 있으면 옛 해시의 JS를 가리킵니다. 배포하며 옛 JS를
+              지웠다면 사용자는 <b>아무 화면도 못 봅니다.</b> CDN을 붙인다는 건
+              <b>캐시 전략도 같이 정하는 일</b>이에요.
+            </div>
+          </div>
+          <div class="pageno">08</div>
+        </section>
+
+        <!-- ====================== 09 SECTION ====================== -->
+        <section class="slide s-sec">
+          <div class="cloud c3"></div>
+          <div class="chrome"><i></i><b>02</b> 오늘의 CDN</div>
+          <div class="pill sm ko reveal" style="color: var(--muted)">
+            Part 2 · 직접 만들어 봅시다
+          </div>
+          <h2 class="reveal d1" style="margin-top: 28px">오늘의 <span class="lat">CDN</span></h2>
+          <div class="bigpills">
+            <span class="pill reveal d2" style="color: var(--mint-deep)">AWS S3</span
+            ><span class="plus reveal d3">+</span
+            ><span class="pill reveal d3" style="color: var(--sky-deep)">CloudFront</span>
+          </div>
+          <p class="lead reveal d4" style="margin-top: 56px">
+            많은 회사가 쓰는 AWS 기준으로, 일정 사용량까지는 <b class="hl">무료</b>로 붙여볼 수
+            있습니다.
+          </p>
+          <div class="pageno">09</div>
+        </section>
+
+        <!-- ====================== 10 CONCEPTS ====================== -->
+        <section class="slide s-con">
+          <div class="chrome"><i></i><b>02</b> 시작하기 전 기본 개념</div>
+          <h2 class="reveal">세 가지만 알면 됩니다</h2>
+          <div class="grid">
+            <div class="card reveal d1">
+              <span class="badge" style="background: var(--mint)">AWS S3</span>
+              <ul>
+                <li>파일을 통째로 넣고 꺼내 쓰는 <b>오브젝트 스토리지</b></li>
+                <li>폴더처럼 보이지만 실제로는 <b>버킷 안에 키(경로) + 파일</b></li>
+                <li>이미지, 번들, 빌드 산출물의 <b>보관소</b></li>
+              </ul>
+            </div>
+            <div class="card reveal d2">
+              <span class="badge" style="background: var(--sky); color: #fff">CloudFront</span>
+              <ul>
+                <li>AWS가 운영하는 <b>CDN</b></li>
+                <li>전 세계 <b>750개 이상</b>의 엣지 로케이션</li>
+                <li>
+                  있으면 <b>Cache Hit</b>로 바로 응답, 없으면 <b>Miss</b>로 S3에서 한 번 가져와 저장
+                </li>
+              </ul>
+            </div>
+            <div class="card reveal d3">
+              <span class="badge" style="background: var(--sun)">OAC</span>
+              <ul>
+                <li>S3를 Public으로 열지 않고 <b>CloudFront만</b> 접근하게 하는 방식</li>
+                <li>S3는 <b>노출되면 안 되는 DB</b>라고 생각하기</li>
+                <li>CloudFront가 유일한 <b>Gateway</b></li>
+              </ul>
+            </div>
+          </div>
+          <div class="pageno">10</div>
+        </section>
+
+        <!-- ====================== 11 ARCHITECTURE ====================== -->
+        <section class="slide s-arch">
+          <div class="chrome"><i></i><b>02</b> 오늘 만들 구조</div>
+          <h2 class="reveal">
+            사용자 → <span class="lat">CloudFront</span> → 잠긴 <span class="lat">S3</span>
+          </h2>
+          <div class="stage2">
+            <svg viewBox="0 0 1640 640">
+              <path class="dots" d="M250 320 C 400 320, 500 320, 620 320" />
+              <path class="dots mint" d="M1010 320 C 1150 320, 1250 320, 1370 320" />
+              <path class="dots coral" d="M160 470 C 500 620, 1100 620, 1440 470" />
+            </svg>
+            <div
+              class="node pop d1"
+              style="width: 170px; height: 170px; left: 60px; top: 235px; font-size: 64px"
+            >
+              🙋
+            </div>
+            <div
+              class="node sky pop d2"
+              style="width: 260px; height: 260px; left: 640px; top: 190px; font-size: 36px"
+            >
+              <div>CloudFront<small>가장 가까운 엣지</small></div>
+            </div>
+            <div
+              class="node sun pop d3"
+              style="width: 220px; height: 220px; left: 1380px; top: 210px; font-size: 36px"
+            >
+              <div>S3<small>Private</small></div>
+            </div>
+            <div class="lock pop d4" style="left: 1330px; top: 180px">🔒</div>
+            <div class="tag reveal d4" style="left: 330px; top: 250px; color: var(--sky-deep)">
+              cdn.scent-jo.dev · HTTPS(ACM)
+            </div>
+            <div class="tag reveal d5" style="left: 1050px; top: 250px; color: var(--mint-deep)">
+              OAC 로만 통과
+            </div>
+            <div class="tag reveal d6" style="left: 690px; top: 590px; color: var(--coral-deep)">
+              S3 URL로 직접 접근 → 403 Forbidden
+            </div>
+          </div>
+          <div class="pageno">11</div>
+        </section>
+
+        <!-- ====================== 12 S3 ====================== -->
+        <section class="slide s-s3">
+          <div class="chrome"><i></i><b>1️⃣</b> S3 버킷 생성</div>
+          <h2 class="reveal">사실 <span class="hl">기본값 그대로</span> 두면 됩니다</h2>
+          <div class="cols">
+            <div class="steps">
+              <div class="step reveal d1">
+                <div class="n">1</div>
+                <div class="body">
+                  <b>기본 설정</b><small>모든 퍼블릭 액세스 차단 ☑ · ACL 비활성화</small>
+                </div>
+              </div>
+              <div class="step reveal d2">
+                <div class="n">2</div>
+                <div class="body">
+                  <b>버킷 유형 → 범용 (General purpose)</b
+                  ><small>정적 파일을 CloudFront로 서빙하는 우리 케이스에 맞는 유형</small>
+                </div>
+              </div>
+              <div class="step reveal d3">
+                <div class="n">3</div>
+                <div class="body">
+                  <b>생성 버튼 누르기~!</b><small>정적 파일을 담아둘 보관소 완성</small>
+                </div>
+              </div>
+            </div>
+            <div class="card tint-sky reveal d4">
+              <h3>범용 vs 디렉터리 버킷</h3>
+              <p>
+                <b>범용 버킷</b>은 여러 가용영역(AZ)에 복제해 보관하고 모든 기능을 쓸 수 있는 기본
+                버킷.
+              </p>
+              <p style="margin-top: 16px">
+                <b>디렉터리 버킷</b>은 S3 Express One Zone 전용으로, 단일 AZ에 몰아넣어 지연시간을
+                줄이는 용도.
+              </p>
+            </div>
+          </div>
+          <div class="pageno">12</div>
+        </section>
+
+        <!-- ====================== 13 CLOUDFRONT ====================== -->
+        <section class="slide s-cf">
+          <div class="chrome"><i></i><b>2️⃣</b> CloudFront 생성</div>
+          <h2 class="reveal">여섯 단계, 대부분 기본값</h2>
+          <div class="tl">
+            <div class="item hot reveal d1">
+              <div class="n">1</div>
+              <div>
+                <h3>👑 무료 플랜 선택</h3>
+                <p>개인 블로그·포트폴리오엔 충분 (다음 장)</p>
+              </div>
+            </div>
+            <div class="item reveal d2">
+              <div class="n">2</div>
+              <div>
+                <h3>초기 설정</h3>
+                <p>기본값 적용. 도메인은 나중에 붙여도 OK</p>
+              </div>
+            </div>
+            <div class="item reveal d3">
+              <div class="n">3</div>
+              <div>
+                <h3>Origin 설정</h3>
+                <p>Origin Type = Amazon S3 → 방금 만든 버킷 선택. 캐싱 설정은 기본값</p>
+              </div>
+            </div>
+            <div class="item reveal d4">
+              <div class="n">4</div>
+              <div>
+                <h3>Enable security</h3>
+                <p>
+                  WAF는 <b>monitor mode ON</b>. 차단 대신 기록만 하며 며칠 지켜본 뒤 blocking 전환
+                </p>
+              </div>
+            </div>
+            <div class="item reveal d5">
+              <div class="n">5</div>
+              <div>
+                <h3>검토 → 생성</h3>
+                <p>실수한 설정 없는지 확인 후 생성</p>
+              </div>
+            </div>
+            <div class="item hot reveal d6">
+              <div class="n">6</div>
+              <div>
+                <h3>OAC 확인 (가장 중요)</h3>
+                <p>
+                  "Allow private S3 bucket access to CloudFront" 체크 시 OAC 정책 <b>자동 생성</b>
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="pageno">13</div>
+        </section>
+
+        <!-- ====================== 14 FREE PLAN ====================== -->
+        <section class="slide s-free">
+          <div class="chrome"><i></i><b>2️⃣</b> 무료 플랜</div>
+          <h2 class="reveal">👑 무료 플랜에 들어 있는 것</h2>
+          <div class="stats">
+            <div class="stat pop d1">
+              <div class="v">100<small>GB</small></div>
+              <div class="l">월 데이터 전송</div>
+            </div>
+            <div class="stat pop d2">
+              <div class="v">100<small>만</small></div>
+              <div class="l">월 요청 수</div>
+            </div>
+            <div class="stat pop d3">
+              <div class="v">5<small>GB</small></div>
+              <div class="l">S3 Standard 스토리지 크레딧</div>
+            </div>
+            <div class="stat pop d4">
+              <div class="v">5<small>개</small></div>
+              <div class="l">WAF 규칙 · 캐시 동작 각각</div>
+            </div>
+          </div>
+          <div class="callout foot reveal d5">
+            <div class="ic">💡</div>
+            <div>
+              S3 저장 비용은 <b>5GB 크레딧으로 상쇄</b>됩니다. 개인 블로그나 포트폴리오에는 충분한
+              수준이에요.
+            </div>
+          </div>
+          <div class="pageno">14</div>
+        </section>
+
+        <!-- ====================== 15 OAC + POLICY ====================== -->
+        <section class="slide s-oac">
+          <div class="chrome"><i></i><b>3️⃣</b> Bucket Policy</div>
+          <h2 class="reveal">
+            <span class="lat">S3</span> 직접 접근 ❌, 오직 <span class="lat">CloudFront</span>로만
+            ⭕
+          </h2>
+          <div class="cols">
+            <pre class="code reveal d1">{
+  <span class="k">"Sid"</span>: <span class="s">"AllowCloudFrontServicePrincipal"</span>,
+  <span class="k">"Effect"</span>: <span class="s">"Allow"</span>,
+  <span class="k">"Principal"</span>: { <span class="k">"Service"</span>: <span class="s">"cloudfront.amazonaws.com"</span> },
+  <span class="k">"Action"</span>: <span class="s">"s3:GetObject"</span>,
+  <span class="k">"Resource"</span>: <span class="s">"arn:aws:s3:::scent-jo-images/*"</span>,
+  <span class="k">"Condition"</span>: { <span class="k">"ArnLike"</span>: {
+    <span class="k">"AWS:SourceArn"</span>:
+      <span class="s">"arn:aws:cloudfront::&lt;ACCOUNT_ID&gt;:distribution/&lt;DIST_ID&gt;"</span>
+  }}
+}</pre>
+            <div class="vs">
+              <div class="try reveal d2">
+                <div>
+                  <b>S3 객체 URL</b>로 직접<br /><span class="mono"
+                    >bucket.s3.amazonaws.com/img.png</span
+                  >
+                </div>
+                <span class="res no">403</span>
+              </div>
+              <div class="try reveal d3">
+                <div>
+                  <b>CloudFront 도메인</b>으로<br /><span class="mono"
+                    >xxxx.cloudfront.net/img.png</span
+                  >
+                </div>
+                <span class="res ok">200</span>
+              </div>
+              <div class="callout reveal d4">
+                <div class="ic">🔒</div>
+                <div>
+                  OAC를 자동 설정하면서 <b>Policy도 알아서</b> 이 CloudFront로 잡아 줍니다. "S3는
+                  노출되면 안 되는 DB"가 여기서 완성돼요.
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="pageno">15</div>
+        </section>
+
+        <!-- ====================== 16 ACM ====================== -->
+        <section class="slide s-acm">
+          <div class="chrome"><i></i><b>4️⃣</b> 커스텀 도메인 · ACM</div>
+          <h2 class="reveal">내 도메인을 붙이려면<br />인증서가 먼저 필요합니다</h2>
+          <div class="cols">
+            <div>
+              <div class="pill sky reveal d1">AWS Certificate Manager</div>
+              <ul>
+                <li class="reveal d2">
+                  AWS가 <b>공인 SSL/TLS 인증서</b>를 발급하고 만료 전 <b>자동 갱신</b>
+                </li>
+                <li class="reveal d3">CloudFront, ALB에 붙여 쓰는 인증서는 <b>무료</b></li>
+                <li class="reveal d4">
+                  <span class="mono">xxxx.cloudfront.net</span>은 이미 HTTPS. 하지만
+                  <span class="mono">cdn.scent-jo.dev</span>를 붙이는 순간 그 도메인을 증명할
+                  인증서가 따로 필요
+                </li>
+              </ul>
+            </div>
+            <div class="warn pop d3">
+              <h3>‼️ 반드시 us-east-1 (버지니아 북부)</h3>
+              <p>
+                CloudFront는 리전으로 구분되지 않는 <b>글로벌 서비스</b>입니다. 그래서 CloudFront에
+                붙일 ACM 인증서는 무조건 <b>us-east-1</b>에서 만들어야 해요.
+              </p>
+              <p style="margin-top: 20px; color: var(--muted); font-size: 26px">
+                여러 서브도메인을 쓸 계획이면 <span class="mono">*.scent-jo.dev</span> 와일드카드로
+                발급해 두면 계속 재사용할 수 있습니다.
+              </p>
+            </div>
+          </div>
+          <div class="pageno">16</div>
+        </section>
+
+        <!-- ====================== 17 DNS CASES ====================== -->
+        <section class="slide s-dns">
+          <div class="chrome"><i></i><b>4️⃣</b> DNS 검증 두 갈래</div>
+          <h2 class="reveal">도메인을 어디서 관리하느냐에 따라</h2>
+          <div class="cols">
+            <div class="card tint-sun reveal d1">
+              <span class="pill sun sm" style="margin-bottom: 22px">Case 1 · AWS Route 53</span>
+              <h3>버튼 한 번이면 끝</h3>
+              <ul>
+                <li>"Route 53에서 레코드 생성" 클릭 → 검증용 CNAME 자동 등록</li>
+                <li>CloudFront 연결도 CNAME 대신 <b>A 레코드 + Alias</b></li>
+                <li>
+                  Alias는 <span class="mono">scent-jo.dev</span> 같은 <b>apex 도메인</b>에도 걸 수
+                  있고 조회 요금 없음
+                </li>
+                <li>이미 외부 네임서버를 쓴다면 이사할 필요는 없음</li>
+              </ul>
+            </div>
+            <div class="card tint-sky reveal d2">
+              <span class="pill sky sm" style="margin-bottom: 22px"
+                >Case 2 · Cloudflare, 가비아 등</span
+              >
+              <h3>CNAME을 직접 등록</h3>
+              <ul>
+                <li>ACM 생성: 도메인 이름 · 내보내기 비활성화 · <b>DNS 검증</b></li>
+                <li>ACM이 주는 <b>CNAME 값</b>을 내 네임서버 DNS 레코드에 등록</li>
+                <li>몇 분 뒤 "성공"이면 발급 완료</li>
+                <li>계속 실패하면 <b>CAA</b> 레코드 두 줄 추가</li>
+              </ul>
+              <pre class="code">0 issue "amazon.com"
+0 issuewild "amazon.com"</pre>
+            </div>
+          </div>
+          <div class="pageno">17</div>
+        </section>
+
+        <!-- ====================== 18 FLOW ====================== -->
+        <section class="slide s-flow">
+          <div class="chrome"><i></i><b>4️⃣</b> 대체 도메인 연결</div>
+          <h2 class="reveal">인증서부터 도메인까지, 한 줄로</h2>
+          <div class="chain">
+            <div class="box pop d1">
+              <div class="n">1</div>
+              <h3>ACM 발급</h3>
+              <p>us-east-1에서<br />DNS 검증 방식</p>
+            </div>
+            <div class="box pop d2">
+              <div class="n">2</div>
+              <h3>CNAME 검증</h3>
+              <p>네임서버에 등록<br />→ "성공"</p>
+            </div>
+            <div class="box pop d3">
+              <div class="n">3</div>
+              <h3>Add Domain</h3>
+              <p>CloudFront 대체 도메인<br /><span class="mono">test-cdn.scent-jo.dev</span></p>
+            </div>
+            <div class="box pop d4">
+              <div class="n">4</div>
+              <h3>TLS 인증서</h3>
+              <p>ACM에 등록해 둔<br />인증서 선택 (자동 선택됨)</p>
+            </div>
+            <div class="box pop d5">
+              <div class="n">5</div>
+              <h3>DNS 레코드</h3>
+              <p>내 도메인 → CloudFront<br />레코드 추가</p>
+            </div>
+          </div>
+          <p class="foot reveal d6">
+            이제 S3에 파일을 넣고 <b>내 도메인</b>으로 요청해 보면 정상적으로 내려옵니다 🎉
+          </p>
+          <div class="pageno">18</div>
+        </section>
+
+        <!-- ====================== 19 WRAP ====================== -->
+        <section class="slide s-wrap">
+          <div class="chrome"><i></i>마무리하며</div>
+          <h2 class="reveal">오늘 한 일</h2>
+          <div class="chain">
+            <span class="pill mint reveal d1">S3에 파일 넣고</span
+            ><span class="arrow reveal d2">→</span>
+            <span class="pill sky reveal d2">CloudFront 앞에 세우고</span
+            ><span class="arrow reveal d3">→</span>
+            <span class="pill sun reveal d3">OAC로 직접 접근 막고</span
+            ><span class="arrow reveal d4">→</span>
+            <span class="pill lav reveal d4">ACM으로 내 도메인 붙이기</span>
+          </div>
+          <div class="quote reveal d5">
+            처음 볼 때 감이 안 왔던 건<br /><span>해보지 않은 막연한 두려움</span> 때문
+            아니었을까요.<br />차근차근 하나씩 해보면 어느새 마스터가 되어 있을 거예요.
+          </div>
+          <div class="pageno">19</div>
+        </section>
+
+        <!-- ====================== 20 NEXT ====================== -->
+        <section class="slide s-next">
+          <div class="chrome"><i></i>더 나아가고 싶다면</div>
+          <h2 class="reveal">다음에 볼 것들</h2>
+          <div class="grid">
+            <div class="card reveal d1">
+              <div class="ic" style="background: var(--sky)">⏱️</div>
+              <h3>Cache-Control 설정</h3>
+              <p>해시 파일은 길게, index.html은 짧게. 캐시 전략을 코드로 정하기</p>
+            </div>
+            <div class="card reveal d2">
+              <div class="ic" style="background: var(--coral)">🧹</div>
+              <h3>캐시 무효화 (Invalidation)</h3>
+              <p>배포 직후 엣지에 남은 옛 파일을 강제로 비우기</p>
+            </div>
+            <div class="card reveal d3">
+              <div class="ic" style="background: var(--mint)">🤖</div>
+              <h3>AWS CLI · MCP</h3>
+              <p>콘솔 대신 CLI와 Agent AI로 자동화하기</p>
+            </div>
+          </div>
+          <div class="pageno">20</div>
+        </section>
+
+        <!-- ====================== 21 END ====================== -->
+        <section class="slide s-end">
+          <div class="cloud c1"></div>
+          <div class="cloud c2"></div>
+          <h1 class="reveal">감사합니다 <span class="lat">:)</span></h1>
+          <p class="reveal d1">이상, 냄새나는 개발자 박창조였습니다.</p>
+          <div class="who reveal d2">
+            <i>조</i>감도 안오네 시리즈 · CDN 최적화 (AWS S3 + CloudFront)
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- 스테이지 밖 컨트롤 -->
+    <div class="progress" id="progress"></div>
+    <div class="edit-hotzone" id="editHotzone"></div>
+    <button class="edit-toggle" id="editToggle" title="편집 모드 (E)">✏️</button>
+    <div class="toast" id="toast"></div>
+
+    <script>
+      /* ===========================================
+   SLIDE PRESENTATION CONTROLLER
+   키보드(←→ Space PgUp/PgDn Home/End), 터치 스와이프, 휠, 진행 바
+   =========================================== */
+      class SlidePresentation {
+        constructor() {
+          this.slides = [...document.querySelectorAll('.slide')];
+          this.stage = document.getElementById('deckStage');
+          this.progress = document.getElementById('progress');
+          this.current = 0;
+          this.setupStageScale();
+          this.setupKeyboard();
+          this.setupTouch();
+          this.setupWheel();
+          const fromHash = parseInt(location.hash.slice(1), 10);
+          this.show(Number.isFinite(fromHash) ? fromHash - 1 : 0);
+        }
+        setupStageScale() {
+          const scale = () => {
+            const k = Math.min(innerWidth / 1920, innerHeight / 1080);
+            const x = (innerWidth - 1920 * k) / 2,
+              y = (innerHeight - 1080 * k) / 2;
+            this.stage.style.transform = `translate(${x}px, ${y}px) scale(${k})`;
+          };
+          scale();
+          addEventListener('resize', scale);
+        }
+        setupKeyboard() {
+          document.addEventListener('keydown', (e) => {
+            if (e.target.getAttribute('contenteditable')) return;
+            const k = e.key;
+            if (k === 'ArrowRight' || k === ' ' || k === 'PageDown' || k === 'ArrowDown') {
+              e.preventDefault();
+              this.next();
+            } else if (k === 'ArrowLeft' || k === 'PageUp' || k === 'ArrowUp') {
+              e.preventDefault();
+              this.prev();
+            } else if (k === 'Home') this.show(0);
+            else if (k === 'End') this.show(this.slides.length - 1);
+          });
+        }
+        setupTouch() {
+          let sx = 0,
+            sy = 0;
+          addEventListener(
+            'touchstart',
+            (e) => {
+              sx = e.touches[0].clientX;
+              sy = e.touches[0].clientY;
+            },
+            { passive: true }
+          );
+          addEventListener(
+            'touchend',
+            (e) => {
+              const dx = e.changedTouches[0].clientX - sx,
+                dy = e.changedTouches[0].clientY - sy;
+              if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy))
+                dx < 0 ? this.next() : this.prev();
+            },
+            { passive: true }
+          );
+        }
+        setupWheel() {
+          let lock = false;
+          addEventListener(
+            'wheel',
+            (e) => {
+              if (lock || document.body.classList.contains('editing')) return;
+              if (Math.abs(e.deltaY) < 30) return;
+              lock = true;
+              setTimeout(() => (lock = false), 700);
+              e.deltaY > 0 ? this.next() : this.prev();
+            },
+            { passive: true }
+          );
+        }
+        show(i) {
+          this.current = Math.max(0, Math.min(i, this.slides.length - 1));
+          this.slides.forEach((s, idx) => {
+            s.classList.toggle('active', idx === this.current);
+            s.classList.toggle('visible', idx === this.current);
+          });
+          this.progress.style.width = `${((this.current + 1) / this.slides.length) * 100}%`;
+          history.replaceState(null, '', `#${this.current + 1}`);
+        }
+        next() {
+          this.show(this.current + 1);
+        }
+        prev() {
+          this.show(this.current - 1);
+        }
+      }
+      const deck = new SlidePresentation();
+
+      /* ===========================================
+   INLINE EDITOR — E 키 / 좌상단 호버로 진입, 클릭해 수정, Ctrl/Cmd+S 저장
+   localStorage에 자동 저장되며, 저장 시 HTML 파일을 다운로드합니다.
+   =========================================== */
+      class InlineEditor {
+        constructor() {
+          this.isActive = false;
+          this.key = 'cdn-slides-edits';
+          this.selector =
+            'h1,h2,h3,p,li,.pill,.lbl,.tag,.chrome,.code,.bar,.stat .v,.stat .l,.step .body,.callout > div:last-child,.quote,.side b,.side span,.why,.f,.who';
+          this.toast = document.getElementById('toast');
+          this.restore();
+          this.bind();
+        }
+        bind() {
+          const toggle = document.getElementById('editToggle');
+          const hot = document.getElementById('editHotzone');
+          let hideTimeout = null;
+          const hideLater = () => {
+            hideTimeout = setTimeout(() => {
+              if (!this.isActive) toggle.classList.remove('show');
+            }, 400);
+          };
+          hot.addEventListener('mouseenter', () => {
+            clearTimeout(hideTimeout);
+            toggle.classList.add('show');
+          });
+          hot.addEventListener('mouseleave', hideLater);
+          toggle.addEventListener('mouseenter', () => clearTimeout(hideTimeout));
+          toggle.addEventListener('mouseleave', hideLater);
+          toggle.addEventListener('click', () => this.toggleEditMode());
+          hot.addEventListener('click', () => this.toggleEditMode());
+          document.addEventListener('keydown', (e) => {
+            if (
+              (e.key === 'e' || e.key === 'E') &&
+              !e.target.getAttribute('contenteditable') &&
+              !e.metaKey &&
+              !e.ctrlKey
+            )
+              this.toggleEditMode();
+            if ((e.metaKey || e.ctrlKey) && e.key === 's' && this.isActive) {
+              e.preventDefault();
+              this.save();
+              this.download();
+            }
+            if (e.key === 'Escape' && this.isActive) this.toggleEditMode();
+          });
+          document.addEventListener('input', (e) => {
+            if (this.isActive && e.target.getAttribute('contenteditable')) this.save();
+          });
+        }
+        toggleEditMode() {
+          this.isActive = !this.isActive;
+          document.body.classList.toggle('editing', this.isActive);
+          document.getElementById('editToggle').classList.toggle('active', this.isActive);
+          document.querySelectorAll(this.selector).forEach((el) => {
+            if (this.isActive) el.setAttribute('contenteditable', 'true');
+            else el.removeAttribute('contenteditable');
+          });
+          this.notify(
+            this.isActive
+              ? '편집 모드: 텍스트를 클릭해 수정, Ctrl/⌘+S 저장, Esc 종료'
+              : '편집 모드 종료'
+          );
+        }
+        save() {
+          const data = {};
+          document.querySelectorAll(this.selector).forEach((el, i) => {
+            data[i] = el.innerHTML;
+          });
+          try {
+            localStorage.setItem(this.key, JSON.stringify(data));
+          } catch (e) {}
+        }
+        restore() {
+          try {
+            const data = JSON.parse(localStorage.getItem(this.key) || 'null');
+            if (!data) return;
+            document.querySelectorAll(this.selector).forEach((el, i) => {
+              if (data[i] != null) el.innerHTML = data[i];
+            });
+          } catch (e) {}
+        }
+        download() {
+          const wasActive = this.isActive;
+          if (wasActive) this.toggleEditMode();
+          const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+          a.download = 'cdn-cloudfront-slides.html';
+          a.click();
+          URL.revokeObjectURL(a.href);
+          this.notify('저장됨 — 다운로드된 파일로 교체하세요');
+        }
+        notify(msg) {
+          this.toast.textContent = msg;
+          this.toast.classList.add('show');
+          clearTimeout(this._t);
+          this._t = setTimeout(() => this.toast.classList.remove('show'), 2200);
+        }
+      }
+      const editor = new InlineEditor();
+    </script>
+  </body>
+</html>
