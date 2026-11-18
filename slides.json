@@ -1,5 +1,12 @@
 [
   {
+    "title": "AI 시대 신입 개발자로 살아남기",
+    "description": "AI와 일한 첫 1년, 맡기는 범위가 넓어질수록 결정·검증·조율이 개발자의 일이 된 과정",
+    "date": "2026-11-18",
+    "tags": ["AI", "Agent", "회고"],
+    "href": "frontend/ai-newbie-survival-slides.html"
+  },
+  {
     "title": "CDN 최적화 감 잡기 — AWS S3 + CloudFront",
     "description": "S3 정적 호스팅부터 CloudFront 캐싱·무효화까지, CDN 최적화의 큰 그림 잡기",
     "date": "2026-09-02",
